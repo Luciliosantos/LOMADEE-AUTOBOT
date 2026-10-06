@@ -49,9 +49,49 @@ async def email(update, context):
     return AFFILIATE
 
 async def affiliate(update, context):
-    context.user_data['affiliate_id'] = '' if update.message.text.strip() == '-' else update.message.text.strip()
-    await update.message.reply_text('🏪 <b>4/4</b> — Loja/campanha para priorizar.\nDigite <b>shopee</b> ou - para deixar automático.', parse_mode='HTML')
-    return CAMPAIGN
+    c = ensure_client(update)
+    d = context.user_data
+
+    affiliate_id = update.message.text.strip()
+    if affiliate_id == '-':
+        affiliate_id = ''
+
+    db.save_affiliate(c['id'], {
+        'email': d.get('email', ''),
+        'affiliate_id': affiliate_id,
+        'source_id': '',
+        'api_key_enc': encrypt(d['api_key']),
+        'campaign': '',
+        'status': 'testing',
+    })
+
+    fresh = db.get_affiliate(c['id'])
+
+    try:
+        await LomadeeAdapter(fresh).test_connection()
+        db.set_affiliate_status(c['id'], 'connected')
+
+        await update.message.reply_text(
+            '✅ <b>Lomadee conectada!</b>\n\n'
+            '🏪 Vou buscar automaticamente todas as lojas disponíveis na sua conta Lomadee.\n\n'
+            'Agora adicione o bot como administrador do seu grupo/canal e use /grupo lá.',
+            parse_mode='HTML',
+            reply_markup=menu()
+        )
+
+    except Exception as e:
+        db.set_affiliate_status(c['id'], 'error', str(e))
+
+        await update.message.reply_text(
+            f'⚠️ A chave foi salva, mas o teste falhou:\n'
+            f'<code>{str(e)[:500]}</code>\n\n'
+            f'Confira os escopos da API Key, principalmente brands:read.',
+            parse_mode='HTML',
+            reply_markup=menu()
+        )
+
+    context.user_data.clear()
+    return ConversationHandler.END
 
 async def campaign(update, context):
     c = ensure_client(update)
@@ -67,7 +107,7 @@ async def campaign(update, context):
         'status': 'testing',
     })
     # Validate immediately with brands:read. This avoids saving a broken setup as active.
-    fresh = db.get_client(update.effective_user.id)
+    fresh = db.get_affiliate(c['id'])
     try:
         await LomadeeAdapter(fresh | {}).test_connection() if False else None
         # sqlite3.Row cannot be merged; use fresh directly.
@@ -86,14 +126,37 @@ async def cancel(update, context):
     return ConversationHandler.END
 
 async def group(update, context):
-    if update.effective_chat.type not in ('group','supergroup','channel'):
-        await update.message.reply_text('Use /grupo dentro do grupo/canal onde o bot vai publicar.')
+    chat = update.effective_chat
+
+    if chat.type == "private":
+        await update.message.reply_text(
+            "📢 O comando /grupo deve ser usado dentro do grupo/canal que você quer cadastrar."
+        )
         return
+
     c = ensure_client(update)
-    db.set_chat(c['id'], update.effective_chat.id)
-    await update.message.reply_text(f'✅ Grupo/canal cadastrado: {update.effective_chat.title or update.effective_chat.id}\n\nAgora use /ativar.', reply_markup=menu())
+
+    db.set_chat(c["id"], chat.id)
+
+    try:
+        await context.bot.send_message(
+            chat_id=update.effective_user.id,
+            text=(
+                f"✅ Grupo/canal cadastrado: <b>{chat.title or chat.id}</b>\n\n"
+                "Agora use /ativar no privado para iniciar a automação."
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        # Se o usuário ainda não iniciou conversa privada com o bot,
+        # não poluímos o grupo com mensagens administrativas.
+        pass
+
 
 async def activate(update, context):
+    if update.effective_chat.type != "private":
+        return
+
     c = ensure_client(update)
     a = db.get_affiliate(c['id'])
     if not a or a['status'] != 'connected':
@@ -106,10 +169,16 @@ async def activate(update, context):
     await update.message.reply_text('▶️ Automação ativada. Vou publicar automaticamente no grupo cadastrado.', reply_markup=menu())
 
 async def pause(update, context):
+    if update.effective_chat.type != "private":
+        return
+
     c = ensure_client(update); db.set_active(c['id'], False)
     await update.message.reply_text('⏸️ Automação pausada.', reply_markup=menu())
 
 async def status(update, context):
+    if update.effective_chat.type != "private":
+        return
+
     c = ensure_client(update); a = db.get_affiliate(c['id'])
     if a:
         conta = {'connected':'🟢 conectada','testing':'🟡 testando','error':'🔴 erro'}.get(a['status'], a['status'])
@@ -125,6 +194,9 @@ async def status(update, context):
         parse_mode='HTML')
 
 async def test(update, context):
+    if update.effective_chat.type != "private":
+        return
+
     c = ensure_client(update)
     try:
         await publish_one(context.bot, c, settings.min_score)
