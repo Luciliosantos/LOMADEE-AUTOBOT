@@ -22,14 +22,36 @@ class Offer:
 
 
 def _num(v):
-    if v is None or v == '':
+    if v is None or v == "":
         return None
-    try:
-        return float(str(v).replace('%','').replace('R$','').replace(' ','').replace('.','').replace(',','.'))
-    except Exception:
-        try: return float(v)
-        except Exception: return None
 
+    # A API da Lomadee normalmente retorna preços numéricos
+    # como 69.99. Não devemos remover o ponto nesse caso.
+    if isinstance(v, (int, float)):
+        return float(v)
+
+    try:
+        s = str(v).strip()
+        s = s.replace("R$", "").replace("%", "").replace(" ", "")
+
+        # Formato brasileiro: 9.999,99
+        if "." in s and "," in s:
+            s = s.replace(".", "").replace(",", ".")
+
+        # Formato brasileiro simples: 69,99
+        elif "," in s:
+            s = s.replace(",", ".")
+
+        # Formato decimal internacional: 69.99
+        # Mantém o ponto.
+
+        return float(s)
+
+    except Exception:
+        try:
+            return float(v)
+        except Exception:
+            return None
 
 def _first(x, *keys, default=''):
     for k in keys:
