@@ -1,9 +1,11 @@
 .env
-.venv/
-__pycache__/
-*.py[cod]
+*.env
 data/*.db
-data/*.db-*
-logs/*.log
+data/*.sqlite
+data/*.sqlite3
+__pycache__/
+*.pyc
+.venv/
+venv/
 *.bak
-.DS_Store
+*.bak_*

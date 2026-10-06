@@ -175,3 +175,267 @@ def health():
 if __name__ == '__main__':
     init_db()
     print('Banco inicializado:', settings.db_path)
+
+# ===== ASSINATURAS / MERCADO PAGO =====
+
+def _ensure_subscription_tables():
+    with conn() as db:
+        db.executescript('''
+        CREATE TABLE IF NOT EXISTS subscriptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          client_id INTEGER UNIQUE NOT NULL,
+          status TEXT DEFAULT 'inactive',
+          expires_at TEXT,
+          payment_id TEXT,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS payments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          client_id INTEGER NOT NULL,
+          payment_id TEXT UNIQUE NOT NULL,
+          amount REAL NOT NULL,
+          status TEXT DEFAULT 'pending',
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+        );
+        ''')
+
+
+def subscription(client_id):
+    _ensure_subscription_tables()
+    with conn() as db:
+        return db.execute(
+            'SELECT * FROM subscriptions WHERE client_id=?',
+            (client_id,)
+        ).fetchone()
+
+
+def save_payment(client_id, payment_id, amount):
+    _ensure_subscription_tables()
+    with conn() as db:
+        db.execute('''
+            INSERT OR REPLACE INTO payments
+            (client_id, payment_id, amount, status)
+            VALUES (?, ?, ?, 'pending')
+        ''', (client_id, str(payment_id), float(amount)))
+
+
+def payment_status(payment_id, status):
+    _ensure_subscription_tables()
+    with conn() as db:
+        db.execute(
+            'UPDATE payments SET status=? WHERE payment_id=?',
+            (status, str(payment_id))
+        )
+
+
+def activate_subscription(client_id, payment_id, days=30):
+    _ensure_subscription_tables()
+
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+
+    with conn() as db:
+        old = db.execute(
+            'SELECT expires_at FROM subscriptions WHERE client_id=?',
+            (client_id,)
+        ).fetchone()
+
+        base = now
+
+        if old and old['expires_at']:
+            try:
+                old_exp = datetime.fromisoformat(
+                    old['expires_at'].replace('Z', '+00:00')
+                )
+                if old_exp > now:
+                    base = old_exp
+            except Exception:
+                pass
+
+        expires = base + timedelta(days=days)
+
+        db.execute('''
+            INSERT INTO subscriptions
+            (client_id, status, expires_at, payment_id, updated_at)
+            VALUES (?, 'active', ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(client_id) DO UPDATE SET
+              status='active',
+              expires_at=excluded.expires_at,
+              payment_id=excluded.payment_id,
+              updated_at=CURRENT_TIMESTAMP
+        ''', (client_id, expires.isoformat(), str(payment_id)))
+
+        db.execute(
+            'UPDATE payments SET status="approved" WHERE payment_id=?',
+            (str(payment_id),)
+        )
+
+        return expires.isoformat()
+
+
+def has_active_subscription(client_id):
+    _ensure_subscription_tables()
+
+    with conn() as db:
+        row = db.execute('''
+            SELECT status, expires_at
+            FROM subscriptions
+            WHERE client_id=?
+        ''', (client_id,)).fetchone()
+
+    if not row or row['status'] != 'active' or not row['expires_at']:
+        return False
+
+    from datetime import datetime, timezone
+
+    try:
+        expires = datetime.fromisoformat(
+            row['expires_at'].replace('Z', '+00:00')
+        )
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+
+        if expires > datetime.now(timezone.utc):
+            return True
+    except Exception:
+        pass
+
+    with conn() as db:
+        db.execute(
+            'UPDATE subscriptions SET status="expired" WHERE client_id=?',
+            (client_id,)
+        )
+
+    return False
+
+def pending_payments():
+    _ensure_subscription_tables()
+    with conn() as db:
+        return db.execute('''
+            SELECT p.*, c.telegram_id, c.name
+            FROM payments p
+            JOIN clients c ON c.id = p.client_id
+            WHERE p.status = 'pending'
+            ORDER BY p.id ASC
+        ''').fetchall()
+
+# ===== CONFIGURAÇÕES POR CLIENTE =====
+
+def _ensure_client_config_table():
+    with conn() as db:
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS client_config (
+                client_id INTEGER PRIMARY KEY,
+                interval_minutes INTEGER DEFAULT 30,
+                stores_json TEXT DEFAULT '[]',
+                popular_enabled INTEGER DEFAULT 1,
+                FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+            )
+        ''')
+
+
+def get_client_config(client_id):
+    _ensure_client_config_table()
+    import json
+
+    with conn() as db:
+        row = db.execute(
+            'SELECT * FROM client_config WHERE client_id=?',
+            (client_id,)
+        ).fetchone()
+
+        if not row:
+            db.execute('''
+                INSERT INTO client_config
+                (client_id, interval_minutes, stores_json, popular_enabled)
+                VALUES (?, 30, '[]', 1)
+            ''', (client_id,))
+
+            row = db.execute(
+                'SELECT * FROM client_config WHERE client_id=?',
+                (client_id,)
+            ).fetchone()
+
+    try:
+        stores = json.loads(row['stores_json'] or '[]')
+        if not isinstance(stores, list):
+            stores = []
+    except Exception:
+        stores = []
+
+    return {
+        'client_id': row['client_id'],
+        'interval_minutes': int(row['interval_minutes'] or 30),
+        'stores': stores,
+        'popular_enabled': bool(row['popular_enabled']),
+    }
+
+
+def save_client_config(
+    client_id,
+    interval_minutes=None,
+    stores=None,
+    popular_enabled=None
+):
+    _ensure_client_config_table()
+    import json
+
+    current = get_client_config(client_id)
+
+    if interval_minutes is None:
+        interval_minutes = current['interval_minutes']
+
+    if stores is None:
+        stores = current['stores']
+
+    if popular_enabled is None:
+        popular_enabled = current['popular_enabled']
+
+    with conn() as db:
+        db.execute('''
+            INSERT INTO client_config
+            (client_id, interval_minutes, stores_json, popular_enabled)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(client_id) DO UPDATE SET
+                interval_minutes=excluded.interval_minutes,
+                stores_json=excluded.stores_json,
+                popular_enabled=excluded.popular_enabled
+        ''', (
+            client_id,
+            int(interval_minutes),
+            json.dumps(stores, ensure_ascii=False),
+            1 if popular_enabled else 0
+        ))
+
+
+def last_post_at(client_id):
+    with conn() as db:
+        row = db.execute('''
+            SELECT posted_at
+            FROM posts
+            WHERE client_id=?
+            ORDER BY posted_at DESC
+            LIMIT 1
+        ''', (client_id,)).fetchone()
+
+    return row['posted_at'] if row else None
+
+
+def set_daily_limit(client_id, daily_limit):
+    with conn() as db:
+        db.execute(
+            "UPDATE clients SET daily_limit=? WHERE id=?",
+            (int(daily_limit), client_id)
+        )
+
+def get_daily_limit(client_id):
+    with conn() as db:
+        row = db.execute(
+            "SELECT daily_limit FROM clients WHERE id=?",
+            (client_id,)
+        ).fetchone()
+    return int(row["daily_limit"] or 12) if row else 12

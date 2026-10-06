@@ -102,39 +102,78 @@ class LomadeeAdapter:
         # brands:read is one of the documented affiliate scopes.
         return await self._get(settings.lomadee_brands_path)
 
-    async def brands(self, limit=20):
-        """Busca todas as marcas disponíveis na conta Lomadee."""
-        all_brands = []
-        page = 1
+    async def brands(self, limit=100):
+        """
+        Busca todas as lojas da conta Lomadee.
+        As páginas seguintes são consultadas em paralelo
+        para acelerar a abertura do menu de lojas.
+        """
+        import asyncio
 
-        while True:
-            data = await self._get(
-                settings.lomadee_brands_path,
-                {"page": page, "limit": limit}
+        first = await self._get(
+            settings.lomadee_brands_path,
+            {"page": 1, "limit": limit}
+        )
+
+        if not isinstance(first, dict):
+            return []
+
+        all_brands = [
+            x for x in (first.get("data") or [])
+            if isinstance(x, dict)
+        ]
+
+        pagination = first.get("pagination") or {}
+
+        try:
+            total_pages = int(
+                pagination.get("totalPages") or 1
             )
+        except Exception:
+            total_pages = 1
 
-            if not isinstance(data, dict):
-                break
+        if total_pages <= 1:
+            return all_brands
 
-            items = data.get("data") or []
+        async def load_page(page):
+            try:
+                data = await self._get(
+                    settings.lomadee_brands_path,
+                    {"page": page, "limit": limit}
+                )
 
-            if not isinstance(items, list):
-                break
+                if not isinstance(data, dict):
+                    return []
 
-            all_brands.extend(
-                x for x in items
-                if isinstance(x, dict)
-            )
+                items = data.get("data") or []
 
-            pagination = data.get("pagination") or {}
-            total_pages = int(pagination.get("totalPages") or page)
+                return [
+                    x for x in items
+                    if isinstance(x, dict)
+                ]
+            except Exception:
+                return []
 
-            if page >= total_pages:
-                break
+        pages = await asyncio.gather(
+            *(load_page(page) for page in range(2, total_pages + 1))
+        )
 
-            page += 1
+        for items in pages:
+            all_brands.extend(items)
 
-        return all_brands
+        # Remove duplicadas
+        result = []
+        seen = set()
+
+        for brand in all_brands:
+            bid = str(brand.get("id") or "")
+            if not bid or bid in seen:
+                continue
+
+            seen.add(bid)
+            result.append(brand)
+
+        return result
 
     async def products(self, limit=50):
         """
