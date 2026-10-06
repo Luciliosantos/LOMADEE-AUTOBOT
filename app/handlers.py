@@ -1,4 +1,4 @@
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import ReplyKeyboardRemove, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
 from app import db
 from app.crypto import encrypt
@@ -135,21 +135,35 @@ async def group(update, context):
         return
 
     c = ensure_client(update)
-
     db.set_chat(c["id"], chat.id)
 
+    # Remove o teclado administrativo antigo do grupo.
+    try:
+        msg = await update.message.reply_text(
+            "✅ Grupo cadastrado. O painel administrativo fica somente no privado.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+        # Apaga a mensagem de confirmação para manter o grupo limpo.
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    # Envia a confirmação somente no privado.
     try:
         await context.bot.send_message(
             chat_id=update.effective_user.id,
             text=(
                 f"✅ Grupo/canal cadastrado: <b>{chat.title or chat.id}</b>\n\n"
-                "Agora use /ativar no privado para iniciar a automação."
+                "O painel administrativo fica somente no privado."
             ),
             parse_mode="HTML",
         )
     except Exception:
-        # Se o usuário ainda não iniciou conversa privada com o bot,
-        # não poluímos o grupo com mensagens administrativas.
         pass
 
 
