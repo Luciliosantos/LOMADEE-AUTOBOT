@@ -146,10 +146,24 @@ def save_offer(o):
         return db.execute('SELECT * FROM offers WHERE external_id=?', (o.external_id,)).fetchone()
 
 
-def was_posted(client_id, offer_id):
+def was_posted(client_id, offer_id, offer_url=None):
     with conn() as db:
-        return bool(db.execute('SELECT 1 FROM posts WHERE client_id=? AND offer_id=?', (client_id,offer_id)).fetchone())
+        if db.execute(
+            'SELECT 1 FROM posts WHERE client_id=? AND offer_id=?',
+            (client_id, offer_id)
+        ).fetchone():
+            return True
 
+        if offer_url:
+            url = str(offer_url).strip().rstrip('/').lower()
+            if url:
+                return bool(db.execute(
+                    "SELECT 1 FROM posts p JOIN offers o ON o.id=p.offer_id "
+                    "WHERE p.client_id=? AND lower(rtrim(o.url, '/'))=?",
+                    (client_id, url)
+                ).fetchone())
+
+        return False
 
 def count_posts_today(client_id):
     with conn() as db:

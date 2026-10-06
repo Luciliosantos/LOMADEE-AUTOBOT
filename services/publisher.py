@@ -295,7 +295,8 @@ async def publish_one(bot, client, min_score=55):
 
         if db.was_posted(
             client['id'],
-            saved['id']
+            saved['id'],
+            o.url
         ):
             continue
 
