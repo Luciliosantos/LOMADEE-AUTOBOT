@@ -1,3 +1,4 @@
+from __future__ import annotations
 import json
 from dataclasses import dataclass
 from urllib.parse import urljoin
@@ -79,10 +80,43 @@ class LomadeeAdapter:
         # brands:read is one of the documented affiliate scopes.
         return await self._get(settings.lomadee_brands_path)
 
+    async def brands(self, limit=20):
+        """Busca todas as marcas disponíveis na conta Lomadee."""
+        all_brands = []
+        page = 1
+
+        while True:
+            data = await self._get(
+                settings.lomadee_brands_path,
+                {"page": page, "limit": limit}
+            )
+
+            if not isinstance(data, dict):
+                break
+
+            items = data.get("data") or []
+
+            if not isinstance(items, list):
+                break
+
+            all_brands.extend(
+                x for x in items
+                if isinstance(x, dict)
+            )
+
+            pagination = data.get("pagination") or {}
+            total_pages = int(pagination.get("totalPages") or page)
+
+            if page >= total_pages:
+                break
+
+            page += 1
+
+        return all_brands
+
     async def products(self, limit=30):
         params = {'limit': limit}
         if self.source_id: params['sourceId'] = self.source_id
-        if self.campaign: params['campaign'] = self.campaign
         data = await self._get(settings.lomadee_products_path, params)
         if isinstance(data, list): items = data
         elif isinstance(data, dict):
@@ -97,9 +131,20 @@ class LomadeeAdapter:
                 merchant=str(_first(x,'merchant','store','brand','brandName',default='Lomadee')),
                 title=str(_first(x,'title','name','productName',default='Oferta')),
                 url=destination,
-                image_url=str(_first(x,'image','imageUrl','thumbnail','thumbnailUrl','picture',default='')),
-                price=_num(_first(x,'price','salePrice','currentPrice',default=None)),
-                old_price=_num(_first(x,'oldPrice','originalPrice','listPrice',default=None)),
+                image_url=str(
+                    _first(x,'image','imageUrl','thumbnail','thumbnailUrl','picture',default='')
+                    or ((x.get('images') or [{}])[0].get('url') if isinstance(x.get('images'), list) and x.get('images') else '')
+                ),
+            price=_num(
+                _first(x,'price','salePrice','currentPrice',default=None)
+                or (((x.get('options') or [{}])[0].get('pricing') or [{}])[0].get('price')
+                    if isinstance(x.get('options'), list) else None)
+            ),
+            old_price=_num(
+                _first(x,'oldPrice','originalPrice','listPrice',default=None)
+                or (((x.get('options') or [{}])[0].get('pricing') or [{}])[0].get('listPrice')
+                    if isinstance(x.get('options'), list) else None)
+            ),
                 commission=_num(_first(x,'commission','commissionRate','commissionPercentage',default=None)),
                 raw_json=json.dumps(x,ensure_ascii=False),
             ))
