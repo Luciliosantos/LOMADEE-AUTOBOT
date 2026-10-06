@@ -114,41 +114,169 @@ class LomadeeAdapter:
 
         return all_brands
 
-    async def products(self, limit=30):
-        params = {'limit': limit}
-        if self.source_id: params['sourceId'] = self.source_id
-        data = await self._get(settings.lomadee_products_path, params)
-        if isinstance(data, list): items = data
-        elif isinstance(data, dict):
-            items = data.get('products') or data.get('data') or data.get('items') or data.get('results') or []
-        else: items = []
-        result=[]
-        for x in items:
-            if not isinstance(x, dict): continue
-            destination = str(_first(x,'affiliateUrl','trackingUrl','deeplink','deepLink','shortUrl','url','productUrl',default=''))
-            result.append(Offer(
-                external_id=str(_first(x,'id','productId','offerId',default=destination)),
-                merchant=str(_first(x,'merchant','store','brand','brandName',default='Lomadee')),
-                title=str(_first(x,'title','name','productName',default='Oferta')),
-                url=destination,
-                image_url=str(
-                    _first(x,'image','imageUrl','thumbnail','thumbnailUrl','picture',default='')
-                    or ((x.get('images') or [{}])[0].get('url') if isinstance(x.get('images'), list) and x.get('images') else '')
-                ),
-            price=_num(
-                _first(x,'price','salePrice','currentPrice',default=None)
-                or (((x.get('options') or [{}])[0].get('pricing') or [{}])[0].get('price')
-                    if isinstance(x.get('options'), list) else None)
-            ),
-            old_price=_num(
-                _first(x,'oldPrice','originalPrice','listPrice',default=None)
-                or (((x.get('options') or [{}])[0].get('pricing') or [{}])[0].get('listPrice')
-                    if isinstance(x.get('options'), list) else None)
-            ),
-                commission=_num(_first(x,'commission','commissionRate','commissionPercentage',default=None)),
-                raw_json=json.dumps(x,ensure_ascii=False),
-            ))
-        return result
+    async def products(self, limit=50):
+        """
+        Busca várias páginas do catálogo Lomadee.
+        A API aceita no máximo 100 produtos por página.
+        """
+
+        all_items = []
+        seen = set()
+
+        # 5 páginas x 100 = até 500 produtos por consulta.
+        for page in range(1, 6):
+            params = {
+                "page": page,
+                "limit": 100,
+            }
+
+            data = await self._get(
+                settings.lomadee_products_path,
+                params
+            )
+
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                items = (
+                    data.get("data")
+                    or data.get("products")
+                    or data.get("items")
+                    or data.get("results")
+                    or []
+                )
+            else:
+                items = []
+
+            if not items:
+                break
+
+            for x in items:
+                if not isinstance(x, dict):
+                    continue
+
+                destination = str(
+                    _first(
+                        x,
+                        "affiliateUrl",
+                        "trackingUrl",
+                        "deeplink",
+                        "deepLink",
+                        "shortUrl",
+                        "url",
+                        "productUrl",
+                        default=""
+                    )
+                )
+
+                external_id = str(
+                    _first(
+                        x,
+                        "id",
+                        "productId",
+                        "offerId",
+                        default=destination
+                    )
+                )
+
+                unique_key = external_id or destination
+
+                if unique_key in seen:
+                    continue
+
+                seen.add(unique_key)
+
+                image_url = str(
+                    _first(
+                        x,
+                        "image",
+                        "imageUrl",
+                        "thumbnail",
+                        "thumbnailUrl",
+                        "picture",
+                        default=""
+                    )
+                    or (
+                        (x.get("images") or [{}])[0].get("url")
+                        if isinstance(x.get("images"), list)
+                        and x.get("images")
+                        else ""
+                    )
+                )
+
+                price = _num(
+                    _first(
+                        x,
+                        "price",
+                        "salePrice",
+                        "currentPrice",
+                        default=None
+                    )
+                    or (
+                        ((x.get("options") or [{}])[0].get("pricing") or [{}])[0].get("price")
+                        if isinstance(x.get("options"), list)
+                        else None
+                    )
+                )
+
+                old_price = _num(
+                    _first(
+                        x,
+                        "oldPrice",
+                        "originalPrice",
+                        "listPrice",
+                        default=None
+                    )
+                    or (
+                        ((x.get("options") or [{}])[0].get("pricing") or [{}])[0].get("listPrice")
+                        if isinstance(x.get("options"), list)
+                        else None
+                    )
+                )
+
+                all_items.append(
+                    Offer(
+                        external_id=external_id,
+                        merchant=str(
+                            _first(
+                                x,
+                                "merchant",
+                                "store",
+                                "brand",
+                                "brandName",
+                                default="Lomadee"
+                            )
+                        ),
+                        title=str(
+                            _first(
+                                x,
+                                "title",
+                                "name",
+                                "productName",
+                                default="Oferta"
+                            )
+                        ),
+                        url=destination,
+                        image_url=image_url,
+                        price=price,
+                        old_price=old_price,
+                        commission=_num(
+                            _first(
+                                x,
+                                "commission",
+                                "commissionRate",
+                                "commissionPercentage",
+                                default=None
+                            )
+                        ),
+                        raw_json=json.dumps(
+                            x,
+                            ensure_ascii=False
+                        ),
+                    )
+                )
+
+        return all_items
 
     async def affiliate_url(self, destination_url: str) -> str:
         # Some product payloads already contain the affiliate/tracking URL.
